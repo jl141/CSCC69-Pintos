@@ -24,6 +24,10 @@
    that are ready to run but not actually running. */
 static struct list ready_list;
 
+/* List of processes taking a nap, that is, sleeping for a specified
+   amount of time. These processes are in the THREAD_BLOCKED state. */
+static struct list nap_list;
+
 /* List of all processes.  Processes are added to this list
    when they are first scheduled and removed when they exit. */
 static struct list all_list;
@@ -91,6 +95,7 @@ thread_init (void)
 
   lock_init (&tid_lock);
   list_init (&ready_list);
+  list_init (&nap_list);
   list_init (&all_list);
 
   /* Set up a thread structure for the running thread. */
@@ -120,7 +125,7 @@ thread_start (void)
 /* Called by the timer interrupt handler at each timer tick.
    Thus, this function runs in an external interrupt context. */
 void
-thread_tick (void) 
+thread_tick (int64_t timer_ticks) 
 {
   struct thread *t = thread_current ();
 
@@ -133,6 +138,18 @@ thread_tick (void)
 #endif
   else
     kernel_ticks++;
+
+  /* Wake napped threads. */
+  if (!list_empty(&nap_list)) 
+  {
+    struct thread *f = list_entry (list_begin (&nap_list),
+                                   struct thread, allelem);
+    if (timer_ticks >= f->wake_time)
+    {
+      list_pop_front (&nap_list);
+      thread_unblock (f);
+    }
+  }
 
   /* Enforce preemption. */
   if (++thread_ticks >= TIME_SLICE)
@@ -314,6 +331,25 @@ thread_yield (void)
   intr_set_level (old_level);
 }
 
+/* Naps the current thread.  It will not be scheduled again until
+   awoken, after TICKS ticks have passed since START. */
+void
+thread_nap (int64_t start, int64_t ticks) 
+{
+  struct thread *cur = thread_current ();
+
+  ASSERT (!intr_context ());
+
+  intr_disable ();
+  if (cur != idle_thread) 
+  {
+    cur->wake_time = start + ticks;
+    list_push_back (&nap_list, &cur->allelem);
+  }
+  cur->status = THREAD_BLOCKED;
+  schedule ();
+}
+
 /* Invoke function 'func' on all threads, passing along 'aux'.
    This function must be called with interrupts off. */
 void
@@ -463,6 +499,7 @@ init_thread (struct thread *t, const char *name, int priority)
   t->stack = (uint8_t *) t + PGSIZE;
   t->priority = priority;
   t->magic = THREAD_MAGIC;
+  t->wake_time = INT64_MIN;
 
   old_level = intr_disable ();
   list_push_back (&all_list, &t->allelem);
