@@ -126,6 +126,8 @@ const char *thread_name (void);
 
 void thread_exit (void) NO_RETURN;
 void thread_yield (void);
+
+list_less_func earlier_wake_time;
 void thread_nap (int64_t start, int64_t ticks);
 
 /* Performs some operation on thread t, given auxiliary data AUX. */

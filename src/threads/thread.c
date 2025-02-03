@@ -140,15 +140,17 @@ thread_tick (int64_t timer_ticks)
     kernel_ticks++;
 
   /* Wake napped threads. */
-  if (!list_empty(&nap_list)) 
+  while (!list_empty(&nap_list)) 
   {
     struct thread *f = list_entry (list_begin (&nap_list),
-                                   struct thread, allelem);
+                                   struct thread, elem);
     if (timer_ticks >= f->wake_time)
     {
       list_pop_front (&nap_list);
       thread_unblock (f);
-    }
+    } 
+    else
+      break;
   }
 
   /* Enforce preemption. */
@@ -331,23 +333,39 @@ thread_yield (void)
   intr_set_level (old_level);
 }
 
+/* Compares the wake_time of two threads with list elements A and B.
+   Returns true if the wake_time of A is less than B, or
+   false if the wake_time of A is greater than or equal to B. */
+bool 
+earlier_wake_time (const struct list_elem *a,
+                      const struct list_elem *b,
+                      void *aux UNUSED)
+{
+  struct thread *thread_a = list_entry (a, struct thread, elem);
+  struct thread *thread_b = list_entry (b, struct thread, elem);
+  return thread_a->wake_time < thread_b->wake_time;
+}
+
 /* Naps the current thread.  It will not be scheduled again until
    awoken, after TICKS ticks have passed since START. */
 void
 thread_nap (int64_t start, int64_t ticks) 
 {
   struct thread *cur = thread_current ();
+  enum intr_level old_level;
 
   ASSERT (!intr_context ());
 
-  intr_disable ();
+  old_level = intr_disable ();
   if (cur != idle_thread) 
   {
     cur->wake_time = start + ticks;
-    list_push_back (&nap_list, &cur->allelem);
+    list_insert_ordered (&nap_list, &cur->elem, 
+                         &earlier_wake_time, NULL);
   }
   cur->status = THREAD_BLOCKED;
   schedule ();
+  intr_set_level (old_level);
 }
 
 /* Invoke function 'func' on all threads, passing along 'aux'.
