@@ -8,9 +8,7 @@
 
 >> Fill in the names and email addresses of your group members.
 
-FirstName LastName <email@domain.example>
-FirstName LastName <email@domain.example>
-FirstName LastName <email@domain.example>
+Julian Liu | laz.liu@mail.utoronto.ca
 
 ---- PRELIMINARIES ----
 
@@ -30,26 +28,89 @@ FirstName LastName <email@domain.example>
 >> `struct' member, global or static variable, `typedef', or
 >> enumeration.  Identify the purpose of each in 25 words or less.
 
+1. In `thread.h', `struct thread':
+Added the following member: `int64_t wake_time'
+>> The time (ticks since boot) after which to wake the thread
+>> from its nap (a sleep triggered by calling `timer_sleep()').
+
+2. In `thread.h`: 
+void thread_tick (void) -> void thread_tick (int64_t timer_ticks);
+>> To allow the number of timer ticks since boot to be passed
+>> to thread_tick(). It compares this value with the wake_time of
+>> napping threads and wakes them up if their wake time has come.
+
+3. In `thread.h`:
+Added the following declaration: list_less_func earlier_wake_time
+>> Declaration of a list element comparison function. 
+>> `list.h` requires a function implementation of type `list_less_func' 
+>> in order to operate on lists with ordered elements.
+>> Our implementation compares the wake_time of the threads associated
+>> with the given list elements.
+
+4. In `thread.h`:
+Added the following declaration: void thread_nap (int64_t start, int64_t ticks)
+>> This is called to nap the current thread. It will not be scheduled again until
+>> awoken, after TICKS ticks have passed since START. Napping threads avoids the
+>> previously busy waiting implementation of looping and yielding.
+
 ---- ALGORITHMS ----
 
 >> A2: Briefly describe what happens in a call to timer_sleep(),
 >> including the effects of the timer interrupt handler.
 
+`timer_sleep(int64_t ticks)' is called with interrupts on. It grabs the current 
+number of timer ticks since boot and calculates if TICKS ticks have elasped since
+then. If not, it makes a call to `thread_nap()', which naps the current thread. 
+The timer interrupt handler is not directly related to timer_sleep().
+
 >> A3: What steps are taken to minimize the amount of time spent in
 >> the timer interrupt handler?
+
+Every timer tick, we check if it is time to wake up any napping threads.
+This is done in thread_tick(), called by the timer interrupt on every tick.
+To minimize the amount of time this takes, an ordered list was utilized to
+store the napping threads. The nap list is ordered, non-decreasing, by the
+`struct thread' member `wake_time'. Every call to thread_tick(), the first
+thread wake time is checked. If the wake time has been reached, we pop the
+thread from the list, wake the thread, and check the next thread, repeating
+until we reach a thread that should still be napping. This is more efficient
+than checking the whole nap list for any threads that should be woken up.
 
 ---- SYNCHRONIZATION ----
 
 >> A4: How are race conditions avoided when multiple threads call
 >> timer_sleep() simultaneously?
 
+In timer_sleep(), a call is made to thread_nap() which disables interrupts
+similarly to the other thread functions, avoiding race conditions. The
+function timer_sleep() itself doesn't access a critical section, it just checks
+the time which is a safe operation. 
+
 >> A5: How are race conditions avoided when a timer interrupt occurs
 >> during a call to timer_sleep()?
+
+Nothing bad happens because timer_sleep() doesn't access a critical section. 
+The timing of napping threads also isn't affected, since timer_sleep() is not the
+function in charge of waking threads up. 
+The currently running thread is in charge of waking up all threads that need to
+wake up. It calls thread_unblock(), whose implementation disables interrupts and
+avoids race conditions.
 
 ---- RATIONALE ----
 
 >> A6: Why did you choose this design?  In what ways is it superior to
 >> another design you considered?
+
+I considered a design where I added another thread state, e.g. THREAD_SLEEPING.
+However I realized that a thread cannot be waiting for a lock and be in
+timer_sleep() at the same time, so I can safely use state THREAD_BLOCKED to take
+advantage of the existing function thread_unblock(). 
+A reason why I chose to implement `nap_list` to queue napping threads is because
+it would allow the currently running thread to wake napping threads rather than
+giving the CPU to the napping thread for it to check for itself, which would solve
+the busy waiting problem. In addition, with this design, I could take advantage of
+`struct thread' member `elem', all the nice functions in `list.h', and thread_tick().
+I feel like this was a simple but effective design and was happy to make it work.
 
              PRIORITY SCHEDULING
              ===================
