@@ -40,7 +40,7 @@ void thread_tick (void) -> void thread_tick (int64_t timer_ticks);
 >> napping threads and wakes them up if their wake time has come.
 
 3. In `thread.h`:
-Added the following declaration: list_less_func earlier_wake_time
+Added the following declaration: list_less_func nap_list_less_func
 >> Declaration of a list element comparison function. 
 >> `list.h` requires a function implementation of type `list_less_func' 
 >> in order to operate on lists with ordered elements.

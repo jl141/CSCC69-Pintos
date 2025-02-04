@@ -88,6 +88,7 @@ struct thread
     char name[16];                      /* Name (for debugging purposes). */
     uint8_t *stack;                     /* Saved stack pointer. */
     int priority;                       /* Priority. */
+    int donated_priority;               /* Donated priority. */
     struct list_elem allelem;           /* List element for all threads list. */
     int64_t wake_time;                  /* Time to wake the thread from a nap, in ticks. */
 
@@ -127,13 +128,14 @@ const char *thread_name (void);
 void thread_exit (void) NO_RETURN;
 void thread_yield (void);
 
-list_less_func earlier_wake_time;
+list_less_func nap_list_less_func;
 void thread_nap (int64_t start, int64_t ticks);
 
 /* Performs some operation on thread t, given auxiliary data AUX. */
 typedef void thread_action_func (struct thread *t, void *aux);
 void thread_foreach (thread_action_func *, void *);
 
+list_less_func ready_list_less_func;
 int thread_get_priority (void);
 void thread_set_priority (int);
 

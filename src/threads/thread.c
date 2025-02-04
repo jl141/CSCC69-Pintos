@@ -140,7 +140,7 @@ thread_tick (int64_t timer_ticks)
     kernel_ticks++;
 
   /* Wake napped threads. */
-  while (!list_empty(&nap_list)) 
+  while (!list_empty (&nap_list)) 
   {
     struct thread *f = list_entry (list_begin (&nap_list),
                                    struct thread, elem);
@@ -219,6 +219,11 @@ thread_create (const char *name, int priority,
 
   /* Add to run queue. */
   thread_unblock (t);
+  
+  /* Yield if new thread has higher priority. */
+  struct thread *cur = thread_current ();
+  if (cur->priority + cur->donated_priority < priority)
+    thread_yield ();
 
   return tid;
 }
@@ -256,7 +261,8 @@ thread_unblock (struct thread *t)
 
   old_level = intr_disable ();
   ASSERT (t->status == THREAD_BLOCKED);
-  list_push_back (&ready_list, &t->elem);
+  list_insert_ordered (&ready_list, &t->elem,
+                       &ready_list_less_func, NULL);
   t->status = THREAD_READY;
   intr_set_level (old_level);
 }
@@ -327,19 +333,20 @@ thread_yield (void)
 
   old_level = intr_disable ();
   if (cur != idle_thread) 
-    list_push_back (&ready_list, &cur->elem);
+    list_insert_ordered (&ready_list, &cur->elem,
+                         &ready_list_less_func, NULL);
   cur->status = THREAD_READY;
   schedule ();
   intr_set_level (old_level);
 }
 
-/* Compares the wake_time of two threads with list elements A and B.
-   Returns true if the wake_time of A is less than B, or
-   false if the wake_time of A is greater than or equal to B. */
+/* Compares 'wake_time' of two threads with list elements A and B.
+   Returns true if 'wake_time' of A is less than B, or
+   false if 'wake_time' of A is greater than or equal to B. */
 bool 
-earlier_wake_time (const struct list_elem *a,
-                      const struct list_elem *b,
-                      void *aux UNUSED)
+nap_list_less_func (const struct list_elem *a,
+                    const struct list_elem *b,
+                    void *aux UNUSED)
 {
   struct thread *thread_a = list_entry (a, struct thread, elem);
   struct thread *thread_b = list_entry (b, struct thread, elem);
@@ -361,7 +368,7 @@ thread_nap (int64_t start, int64_t ticks)
   {
     cur->wake_time = start + ticks;
     list_insert_ordered (&nap_list, &cur->elem, 
-                         &earlier_wake_time, NULL);
+                         &nap_list_less_func, NULL);
   }
   cur->status = THREAD_BLOCKED;
   schedule ();
@@ -385,18 +392,44 @@ thread_foreach (thread_action_func *func, void *aux)
     }
 }
 
+/* Compares the total priority ('priority' + 'donated_priority') of two
+   threads with list elements A and B. Returns true if the total
+   priority of A is greater than B, or false if the total priority of A
+   is less than or equal to B. */
+bool 
+ready_list_less_func (const struct list_elem *a,
+                      const struct list_elem *b,
+                      void *aux UNUSED)
+{
+  struct thread *thread_a = list_entry (a, struct thread, elem);
+  struct thread *thread_b = list_entry (b, struct thread, elem);
+  int a_total = thread_a->priority + thread_a->donated_priority;
+  int b_total = thread_b->priority + thread_b->donated_priority;
+  return a_total > b_total;
+}
+
 /* Sets the current thread's priority to NEW_PRIORITY. */
 void
 thread_set_priority (int new_priority) 
 {
   thread_current ()->priority = new_priority;
+  list_sort (&ready_list, &ready_list_less_func, NULL);
+  if (!list_empty (&ready_list))
+  {
+    struct thread *next_thread = list_entry (list_begin (&ready_list), 
+                                             struct thread, elem);
+    int next_priority = next_thread->priority + next_thread->donated_priority;
+    if (next_priority > new_priority)
+      thread_yield();
+  }
 }
 
 /* Returns the current thread's priority. */
 int
-thread_get_priority (void) 
+thread_get_priority (void)
 {
-  return thread_current ()->priority;
+  struct thread *cur = thread_current ();
+  return cur->priority + cur->donated_priority;
 }
 
 /* Sets the current thread's nice value to NICE. */
