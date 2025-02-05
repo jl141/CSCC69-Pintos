@@ -69,7 +69,6 @@ static void idle (void *aux UNUSED);
 static struct thread *running_thread (void);
 static struct thread *next_thread_to_run (void);
 static void init_thread (struct thread *, const char *name, int priority);
-static bool is_thread (struct thread *) UNUSED;
 static void *alloc_frame (struct thread *, size_t size);
 static void schedule (void);
 void thread_schedule_tail (struct thread *prev);
@@ -222,7 +221,7 @@ thread_create (const char *name, int priority,
   
   /* Yield if new thread has higher priority. */
   struct thread *cur = thread_current ();
-  if (cur->priority + cur->donated_priority < priority)
+  if (cur->priority < priority)
     thread_yield ();
 
   return tid;
@@ -392,10 +391,9 @@ thread_foreach (thread_action_func *func, void *aux)
     }
 }
 
-/* Compares the total priority ('priority' + 'donated_priority') of two
-   threads with list elements A and B. Returns true if the total
-   priority of A is greater than B, or false if the total priority of A
-   is less than or equal to B. */
+/* Compares the priority of two threads with list elements A and B.
+   Returns true if the priority of A is greater than B, or false if
+   the priority of A is less than or equal to B. */
 bool 
 ready_list_less_func (const struct list_elem *a,
                       const struct list_elem *b,
@@ -403,23 +401,29 @@ ready_list_less_func (const struct list_elem *a,
 {
   struct thread *thread_a = list_entry (a, struct thread, elem);
   struct thread *thread_b = list_entry (b, struct thread, elem);
-  int a_total = thread_a->priority + thread_a->donated_priority;
-  int b_total = thread_b->priority + thread_b->donated_priority;
-  return a_total > b_total;
+  return thread_a->priority > thread_b->priority;
 }
 
-/* Sets the current thread's priority to NEW_PRIORITY. */
+/* Sets the current thread's priority to NEW_PRIORITY. 
+   If NEW_PRIORITY is lower than the current priority while
+   priority donation is present, the change will not take
+   effect until after the donations have been resolved. */
 void
 thread_set_priority (int new_priority) 
 {
+  if (new_priority < thread_get_priority () &&
+      thread_has_donations ())
+  {
+    thread_current ()->pending_priority = new_priority;
+    return;
+  }
   thread_current ()->priority = new_priority;
   list_sort (&ready_list, &ready_list_less_func, NULL);
   if (!list_empty (&ready_list))
   {
     struct thread *next_thread = list_entry (list_begin (&ready_list), 
                                              struct thread, elem);
-    int next_priority = next_thread->priority + next_thread->donated_priority;
-    if (next_priority > new_priority)
+    if (next_thread->priority > new_priority)
       thread_yield();
   }
 }
@@ -429,7 +433,7 @@ int
 thread_get_priority (void)
 {
   struct thread *cur = thread_current ();
-  return cur->priority + cur->donated_priority;
+  return cur->priority;
 }
 
 /* Sets the current thread's nice value to NICE. */
@@ -437,6 +441,53 @@ void
 thread_set_nice (int nice UNUSED) 
 {
   /* Not yet implemented. */
+}
+
+/* Bestow donation D to thread T. */
+int
+thread_bestow_donation (struct thread *t, int d)
+{
+  t->priority = t->priority + d;
+  for (int i = 0; i < DEPTH; i++) 
+  {
+    if (t->donated_priorities[i] == NO_DONO)
+    {
+      t->donated_priorities[i] = d;
+      return t->priority;
+    }
+  }
+  PANIC ("Exceeded limit of %d nested priority donations!", DEPTH);
+}
+
+/* Revoke the latest donation to the current thread. */
+void
+thread_revoke_donation ()
+{
+  struct thread *cur = thread_current ();
+  for (int i = 0; i < DEPTH; i++) 
+  {
+    if (cur->donated_priorities[i] == NO_DONO || i == DEPTH - 1)
+    {
+      if (i == 0)
+        break;
+      cur->priority = cur->priority - cur->donated_priorities[i - 1];
+      cur->donated_priorities[i - 1] = NO_DONO;
+      break;
+    }
+  }
+}
+
+/* Returns true if the current thread has a priority donation. */
+bool
+thread_has_donations ()
+{
+  struct thread *cur = thread_current ();
+  for (int i = 0; i < DEPTH; i++) 
+  {
+    if (cur->donated_priorities[i] != NO_DONO)
+      return true;
+  }
+  return false;
 }
 
 /* Returns the current thread's nice value. */
@@ -527,7 +578,7 @@ running_thread (void)
 }
 
 /* Returns true if T appears to point to a valid thread. */
-static bool
+bool
 is_thread (struct thread *t)
 {
   return t != NULL && t->magic == THREAD_MAGIC;
@@ -549,6 +600,9 @@ init_thread (struct thread *t, const char *name, int priority)
   strlcpy (t->name, name, sizeof t->name);
   t->stack = (uint8_t *) t + PGSIZE;
   t->priority = priority;
+  for (int i = 0; i < DEPTH; i++)
+    t->donated_priorities[i] = NO_DONO;
+  t->pending_priority = PRI_MIN;
   t->magic = THREAD_MAGIC;
   t->wake_time = INT64_MIN;
 
@@ -568,6 +622,19 @@ alloc_frame (struct thread *t, size_t size)
 
   t->stack -= size;
   return t->stack;
+}
+
+/* Returns true if the next thread to run has the same priority as the
+   current thread, false otherwise. */
+bool
+is_next_thread_equal_priority (void) 
+{
+  int cur_prio = thread_get_priority ();
+  if (list_empty (&ready_list) ||
+      cur_prio !=
+      list_entry (list_begin (&ready_list), struct thread, elem)->priority)
+    return false;
+  return true;
 }
 
 /* Chooses and returns the next thread to be scheduled.  Should
