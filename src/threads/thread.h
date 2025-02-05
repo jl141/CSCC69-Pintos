@@ -27,8 +27,8 @@ typedef int tid_t;
 /* Empty donation. */
 #define NO_DONO 0
 
-/* Limit on depth of nested priority donation. */
-#define DEPTH 8
+/* Limit on number of distinct priority donations. */
+#define WIDTH 32
 
 /* A kernel thread or user process.
 
@@ -94,8 +94,9 @@ struct thread
     char name[16];                      /* Name (for debugging purposes). */
     uint8_t *stack;                     /* Saved stack pointer. */
     int priority;                       /* Priority. */
-    int donated_priorities[DEPTH];      /* Donated priorities. */
+    int donated_priorities[WIDTH];      /* Donated priorities. */
     int pending_priority;               /* Priority pending donation revocation. */
+    struct lock *pending_lock;          /* Lock pending release. */
     struct list_elem allelem;           /* List element for all threads list. */
     int64_t wake_time;                  /* Time to wake the thread from a nap, in ticks. */
 
@@ -145,7 +146,7 @@ void thread_foreach (thread_action_func *, void *);
 list_less_func ready_list_less_func;
 int thread_get_priority (void);
 void thread_set_priority (int);
-int thread_bestow_donation (struct thread *t, int d);
+void thread_bestow_donation (struct thread *t, int d);
 void thread_revoke_donation (void);
 bool thread_has_donations (void);
 

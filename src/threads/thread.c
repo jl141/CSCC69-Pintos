@@ -444,19 +444,19 @@ thread_set_nice (int nice UNUSED)
 }
 
 /* Bestow donation D to thread T. */
-int
+void
 thread_bestow_donation (struct thread *t, int d)
 {
   t->priority = t->priority + d;
-  for (int i = 0; i < DEPTH; i++) 
+  for (int i = 0; i < WIDTH; i++) 
   {
     if (t->donated_priorities[i] == NO_DONO)
     {
       t->donated_priorities[i] = d;
-      return t->priority;
+      return;
     }
   }
-  PANIC ("Exceeded limit of %d nested priority donations!", DEPTH);
+  PANIC ("Exceeded limit of %d nested priority donations!", WIDTH);
 }
 
 /* Revoke the latest donation to the current thread. */
@@ -464,9 +464,9 @@ void
 thread_revoke_donation ()
 {
   struct thread *cur = thread_current ();
-  for (int i = 0; i < DEPTH; i++) 
+  for (int i = 0; i < WIDTH; i++) 
   {
-    if (cur->donated_priorities[i] == NO_DONO || i == DEPTH - 1)
+    if (cur->donated_priorities[i] == NO_DONO || i == WIDTH - 1)
     {
       if (i == 0)
         break;
@@ -482,7 +482,7 @@ bool
 thread_has_donations ()
 {
   struct thread *cur = thread_current ();
-  for (int i = 0; i < DEPTH; i++) 
+  for (int i = 0; i < WIDTH; i++) 
   {
     if (cur->donated_priorities[i] != NO_DONO)
       return true;
@@ -600,9 +600,10 @@ init_thread (struct thread *t, const char *name, int priority)
   strlcpy (t->name, name, sizeof t->name);
   t->stack = (uint8_t *) t + PGSIZE;
   t->priority = priority;
-  for (int i = 0; i < DEPTH; i++)
+  for (int i = 0; i < WIDTH; i++)
     t->donated_priorities[i] = NO_DONO;
   t->pending_priority = PRI_MIN;
+  t->pending_lock = NULL;
   t->magic = THREAD_MAGIC;
   t->wake_time = INT64_MIN;
 
