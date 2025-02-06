@@ -4,6 +4,7 @@
 #include <random.h>
 #include <stdio.h>
 #include <string.h>
+#include "devices/timer.h"
 #include "threads/flags.h"
 #include "threads/interrupt.h"
 #include "threads/intr-stubs.h"
@@ -124,7 +125,7 @@ thread_start (void)
 /* Called by the timer interrupt handler at each timer tick.
    Thus, this function runs in an external interrupt context. */
 void
-thread_tick (int64_t timer_ticks) 
+thread_tick (void) 
 {
   struct thread *t = thread_current ();
 
@@ -143,7 +144,7 @@ thread_tick (int64_t timer_ticks)
   {
     struct thread *f = list_entry (list_begin (&nap_list),
                                    struct thread, elem);
-    if (timer_ticks >= f->wake_time)
+    if (timer_ticks () >= f->wake_time)
     {
       list_pop_front (&nap_list);
       thread_unblock (f);
@@ -261,7 +262,7 @@ thread_unblock (struct thread *t)
   old_level = intr_disable ();
   ASSERT (t->status == THREAD_BLOCKED);
   list_insert_ordered (&ready_list, &t->elem,
-                       &ready_list_less_func, NULL);
+                       &prio_list_less_func, NULL);
   t->status = THREAD_READY;
   intr_set_level (old_level);
 }
@@ -333,7 +334,7 @@ thread_yield (void)
   old_level = intr_disable ();
   if (cur != idle_thread) 
     list_insert_ordered (&ready_list, &cur->elem,
-                         &ready_list_less_func, NULL);
+                         &prio_list_less_func, NULL);
   cur->status = THREAD_READY;
   schedule ();
   intr_set_level (old_level);
@@ -395,9 +396,9 @@ thread_foreach (thread_action_func *func, void *aux)
    Returns true if the priority of A is greater than B, or false if
    the priority of A is less than or equal to B. */
 bool 
-ready_list_less_func (const struct list_elem *a,
-                      const struct list_elem *b,
-                      void *aux UNUSED)
+prio_list_less_func (const struct list_elem *a,
+                     const struct list_elem *b,
+                     void *aux UNUSED)
 {
   struct thread *thread_a = list_entry (a, struct thread, elem);
   struct thread *thread_b = list_entry (b, struct thread, elem);
@@ -418,7 +419,7 @@ thread_set_priority (int new_priority)
     return;
   }
   thread_current ()->priority = new_priority;
-  list_sort (&ready_list, &ready_list_less_func, NULL);
+  list_sort (&ready_list, &prio_list_less_func, NULL);
   if (!list_empty (&ready_list))
   {
     struct thread *next_thread = list_entry (list_begin (&ready_list), 

@@ -28,30 +28,18 @@ Julian Liu | laz.liu@mail.utoronto.ca
 >> `struct' member, global or static variable, `typedef', or
 >> enumeration.  Identify the purpose of each in 25 words or less.
 
-1. In `thread.h', `struct thread':
-Added the following member: `int64_t wake_time'
->> The time (ticks since boot) after which to wake the thread
->> from its nap (a sleep triggered by calling `timer_sleep()').
+Added to `struct thread':
 
-2. In `thread.h`: 
-void thread_tick (void) -> void thread_tick (int64_t timer_ticks);
->> To allow the number of timer ticks since boot to be passed
->> to thread_tick(). It compares this value with the wake_time of
->> napping threads and wakes them up if their wake time has come.
+    int64_t wake_time; /* Time to wake the thread from a nap, in ticks. */
 
-3. In `thread.h`:
-Added the following declaration: list_less_func nap_list_less_func
->> Declaration of a list element comparison function. 
->> `list.h` requires a function implementation of type `list_less_func' 
->> in order to operate on lists with ordered elements.
->> Our implementation compares the wake_time of the threads associated
->> with the given list elements.
+This represents the time (ticks since boot) after which the thread should be
+woken from its nap (a nap is a sleep triggered by a call to `timer_sleep()').
 
-4. In `thread.h`:
-Added the following declaration: void thread_nap (int64_t start, int64_t ticks)
->> This is called to nap the current thread. It will not be scheduled again until
->> awoken, after TICKS ticks have passed since START. Napping threads avoids the
->> previously busy waiting implementation of looping and yielding.
+Added in `thread.h':
+
+    /* For an implementation of timer_sleep() that avoids busy waiting. */
+    list_less_func nap_list_less_func;                /* For sorting napping threads. */
+    void thread_nap (int64_t start, int64_t ticks);   /* Naps the current thread. */
 
 ---- ALGORITHMS ----
 
@@ -60,41 +48,51 @@ Added the following declaration: void thread_nap (int64_t start, int64_t ticks)
 
 `timer_sleep(int64_t ticks)' is called with interrupts on. It grabs the current 
 number of timer ticks since boot and calculates if TICKS ticks have elasped since
-then. If not, it makes a call to `thread_nap()', which naps the current thread. 
-The timer interrupt handler is not directly related to timer_sleep().
+then. If not, it makes a call to `thread_nap()', which naps the current thread until
+TICKS ticks have elasped.
+The timer interrupt handler calls `thread_tick()' on every timer tick, which is
+responsible for waking up any threads that have reached the end of their nap.
 
 >> A3: What steps are taken to minimize the amount of time spent in
 >> the timer interrupt handler?
 
-Every timer tick, we check if it is time to wake up any napping threads.
-This is done in thread_tick(), called by the timer interrupt on every tick.
-To minimize the amount of time this takes, an ordered list was utilized to
-store the napping threads. The nap list is ordered, non-decreasing, by the
-`struct thread' member `wake_time'. Every call to thread_tick(), the first
-thread wake time is checked. If the wake time has been reached, we pop the
-thread from the list, wake the thread, and check the next thread, repeating
-until we reach a thread that should still be napping. This is more efficient
-than checking the whole nap list for any threads that should be woken up.
+On every timer tick, the timer interrupt handler calls `thread_tick()' which checks 
+if it is time to wake up any napping threads. To minimize the amount of time this
+process takes, an ordered list (`nap_list') was utilized to store the napping threads.
+`nap_list' is ordered, non-decreasing, by the `struct thread' member `wake_time'. 
+While the first thread in `nap_list` has reached their wake time, we pop it from
+the list and wake it up. This saves unnecessary operations on threads that are still napping.
 
 ---- SYNCHRONIZATION ----
 
 >> A4: How are race conditions avoided when multiple threads call
 >> timer_sleep() simultaneously?
 
-In timer_sleep(), a call is made to thread_nap() which disables interrupts
-similarly to the other thread functions, avoiding race conditions. The
-function timer_sleep() itself doesn't access a critical section, it just checks
-the time which is a safe operation. 
+The amount of time each thread wants to sleep for is accounted for in its corresponding `struct thread'.
+All `timer_sleep()' does is make a call to `thread_nap()' if the requested nap period has not already
+elapsed . 
+Note that `thread_nap()' accesses a critical section, namely `nap_list'. To avoid race conditions, it
+disables interrupts similarly to the other thread functions like `thread_unblock()' or `thread_yield()'.
 
 >> A5: How are race conditions avoided when a timer interrupt occurs
 >> during a call to timer_sleep()?
 
-Nothing bad happens because timer_sleep() doesn't access a critical section. 
-The timing of napping threads also isn't affected, since timer_sleep() is not the
-function in charge of waking threads up. 
-The currently running thread is in charge of waking up all threads that need to
-wake up. It calls thread_unblock(), whose implementation disables interrupts and
-avoids race conditions.
+89    void
+90    timer_sleep (int64_t ticks) 
+91    {
+92      int64_t start = timer_ticks ();
+93
+94      ASSERT (intr_get_level () == INTR_ON);
+95      if (timer_elapsed (start) < ticks) 
+96        thread_nap (start, ticks);
+97    }
+
+We will show that a timer interrupt causing a thread switch would not be able to cause a race condition.
+
+`timer_sleep()' does not access any critical sections. Recall that all `timer_sleep()' does is make a call
+to `thread_nap()' if the requested nap period has not already elapsed, which is calculated by comparing the
+number of elasped timer ticks to the TICKS. 
+Therefore a timer interrupt causing a thread switch would not be able to cause a race condition.
 
 ---- RATIONALE ----
 
@@ -102,12 +100,13 @@ avoids race conditions.
 >> another design you considered?
 
 I considered a design where I added another thread state, e.g. THREAD_SLEEPING.
-However I realized that a thread cannot be waiting for a lock and be in
-timer_sleep() at the same time, so I can safely use state THREAD_BLOCKED to take
-advantage of the existing function thread_unblock(). 
+However I realized that a thread cannot be waiting for a synchronization construct and
+be in timer_sleep() at the same time, so I can safely use state THREAD_BLOCKED to take
+advantage of the existing function thread_unblock().
+
 A reason why I chose to implement `nap_list` to queue napping threads is because
 it would allow the currently running thread to wake napping threads rather than
-giving the CPU to the napping thread for it to check for itself, which would solve
+giving the CPU to the napping thread for it to check the time for itself, which would solve
 the busy waiting problem. In addition, with this design, I could take advantage of
 `struct thread' member `elem', all the nice functions in `list.h', and thread_tick().
 I feel like this was a simple but effective design and was happy to make it work.
@@ -121,6 +120,33 @@ I feel like this was a simple but effective design and was happy to make it work
 >> `struct' member, global or static variable, `typedef', or
 >> enumeration.  Identify the purpose of each in 25 words or less.
 
+Added to `struct thread':
+
+    int donated_priorities[WIDTH];      /* Donated priorities. */
+    int pending_priority;               /* Priority pending donation revocation. */
+    struct lock *pending_lock;          /* Lock pending release. */
+
+`donated_priorities' keeps track of the priority donations that have been made to the thread,
+up to maximum of WIDTH donations. This solves cases of multiple donations.
+`pending_priority' keeps track of the priority the thread should set itself to after the donations
+made to it are resolved. This solves cases of priority lowering during an active priority donation.
+`pending_lock' keeps track of the lock the thread is waiting on. This helps to solve cases of
+nested priorities. 
+
+Added/modified in `thread.h':
+
+    /* For priority scheduling and priority donation. */
+    list_less_func prio_list_less_func;                     /* For sorting threads with priorities. */
+    int thread_get_priority (void);                         /* Gets the priority of the current running thread. */
+    void thread_set_priority (int);                         /* Sets the priority of the current running thread. */
+    void thread_bestow_donation (struct thread *t, int d);  /* Gives a priority donation to a thread. */
+    void thread_revoke_donation (void);                     /* Resets the most recent donation made to the current running thread. */
+    bool thread_has_donations (void);                       /* True if the current running thread has a priority donation. */
+    bool is_next_thread_equal_priority (void);              /* True if the next thread in the run queue has equal priority. */
+
+    /* Returns true if the given thread is a valid thread. */
+    bool is_thread (struct thread *t);
+
 >> B2: Explain the data structure used to track priority donation.
 >> Use ASCII art to diagram a nested donation.  (Alternately, submit a
 >> .png file.)
@@ -130,11 +156,28 @@ I feel like this was a simple but effective design and was happy to make it work
 >> B3: How do you ensure that the highest priority thread waiting for
 >> a lock, semaphore, or condition variable wakes up first?
 
+When release a lock, up-ing a semaphore, or signalling a condition variable, sorting is utilized
+to ensure that the thread with the highest priority is the thread to be woken up. 
+In particular, `list_less_func prio_list_less_func' is used to sort threads waiting on a lock
+or semaphore, while a manual sort is used to sort threads waiting on a condition variable.
+
 >> B4: Describe the sequence of events when a call to lock_acquire()
 >> causes a priority donation.  How is nested donation handled?
 
+Thread A with prio 31 acquires lock A. Thread B with prio 32 acquires lock A, which results
+in a donaton from thread B to thread A.
+
+Nested donation is handled by continuously donating priority to the holder of the lock that
+the next nested thread is waiting on. `struct thread' member `struct lock *pending_lock' is
+used for this purpose.
+
 >> B5: Describe the sequence of events when lock_release() is called
 >> on a lock that a higher-priority thread is waiting for.
+
+Thread A with prio 31 acquires lock A. Thread B with prio 32 acquires lock A, which results
+in a donaton from thread B to thread A. When thread A calls `lock_release()', it checks for
+thread B in the lock's wait queue. If B exists, A will revoke its more recent donation before
+up-ing the lock's semaphore to allow B to run immediately after release.
 
 ---- SYNCHRONIZATION ----
 
@@ -146,6 +189,13 @@ I feel like this was a simple but effective design and was happy to make it work
 
 >> B7: Why did you choose this design?  In what ways is it superior to
 >> another design you considered?
+
+Similar to the Alarm Clock, I tried to utilize as much existing code as possible for the
+simplest solution. In addition, I refrained from creating new structs and instead added members
+to `struct thread' to simplify dealing with threads. 
+
+I imposed no limit on nesting but a limit on distinct priority donations since you could theoretically
+have infinite nesting but finite distinct priority donations since priority is a finite range from 0 to 63.
 
 
                SURVEY QUESTIONS

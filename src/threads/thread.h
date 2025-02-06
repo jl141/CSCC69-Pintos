@@ -28,7 +28,7 @@ typedef int tid_t;
 #define NO_DONO 0
 
 /* Limit on number of distinct priority donations. */
-#define WIDTH 32
+#define WIDTH 63
 
 /* A kernel thread or user process.
 
@@ -120,7 +120,7 @@ extern bool thread_mlfqs;
 void thread_init (void);
 void thread_start (void);
 
-void thread_tick (int64_t timer_ticks);
+void thread_tick (void);
 void thread_print_stats (void);
 
 typedef void thread_func (void *aux);
@@ -136,26 +136,29 @@ const char *thread_name (void);
 void thread_exit (void) NO_RETURN;
 void thread_yield (void);
 
-list_less_func nap_list_less_func;
-void thread_nap (int64_t start, int64_t ticks);
+/* For an implementation of timer_sleep() that avoids busy waiting. */
+list_less_func nap_list_less_func;                /* For sorting napping threads. */
+void thread_nap (int64_t start, int64_t ticks);   /* Naps the current thread. */
 
 /* Performs some operation on thread t, given auxiliary data AUX. */
 typedef void thread_action_func (struct thread *t, void *aux);
 void thread_foreach (thread_action_func *, void *);
 
-list_less_func ready_list_less_func;
-int thread_get_priority (void);
-void thread_set_priority (int);
-void thread_bestow_donation (struct thread *t, int d);
-void thread_revoke_donation (void);
-bool thread_has_donations (void);
+/* For priority scheduling and priority donation. */
+list_less_func prio_list_less_func;                     /* For sorting threads with priorities. */
+int thread_get_priority (void);                         /* Gets the priority of the current running thread. */
+void thread_set_priority (int);                         /* Sets the priority of the current running thread. */
+void thread_bestow_donation (struct thread *t, int d);  /* Gives a priority donation to a thread. */
+void thread_revoke_donation (void);                     /* Resets the most recent donation made to the current running thread. */
+bool thread_has_donations (void);                       /* True if the current running thread has a priority donation. */
+bool is_next_thread_equal_priority (void);              /* True if the next thread in the run queue has equal priority. */
 
 int thread_get_nice (void);
 void thread_set_nice (int);
 int thread_get_recent_cpu (void);
 int thread_get_load_avg (void);
 
+/* Returns true if the given thread is a valid thread. */
 bool is_thread (struct thread *t);
-bool is_next_thread_equal_priority (void);
 
 #endif /* threads/thread.h */
