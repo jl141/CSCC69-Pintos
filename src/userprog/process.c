@@ -15,8 +15,67 @@
 #include "threads/init.h"
 #include "threads/interrupt.h"
 #include "threads/palloc.h"
+#include "threads/synch.h"
 #include "threads/thread.h"
 #include "threads/vaddr.h"
+
+
+int
+process_put_file (struct file *file)
+{
+  if (file == NULL)
+    return -1;
+
+  struct thread *t = thread_current ();
+  int fd = t->fd_next;
+  if (fd >= FD_MAX)
+    return -1;
+  t->fd_table[fd] = file;
+  return fd;
+}
+
+struct file *
+process_get_file (int fd)
+{
+  if (fd == STDIN_FILENO || fd == STDOUT_FILENO)
+    return NULL;
+
+  struct thread *t = thread_current ();
+  if (fd >= t->fd_next)
+    return NULL;
+  return t->fd_table[fd];
+}
+
+void
+process_close_file (int fd)
+{
+  if (fd == STDIN_FILENO || fd == STDOUT_FILENO)
+    return;
+
+  struct thread *t = thread_current ();
+  for (int i = 0; i < FD_MAX; i++)
+    if (i == fd)
+      t->fd_table[i] = NULL;
+}
+
+static void
+parent_wait (struct thread *t, void *child_tid_)
+{
+  tid_t *child_tid = child_tid_;
+  if (t->tid == *child_tid)
+  {
+    if (&t->life_sema != NULL)
+      sema_down (&t->life_sema);
+  }
+}
+
+static void
+child_exit (struct thread *t, void *aux UNUSED)
+{
+  struct thread *cur = thread_current ();
+  if (t->tid == cur->parent_tid)
+    t->child_exit_code = cur->exit_code;
+}
 
 static thread_func start_process NO_RETURN;
 static bool load (const char *file_name, char *cmdline, void (**eip) (void), void **esp);
@@ -44,11 +103,26 @@ process_execute (const char *cmdline)
     return TID_ERROR;
   strlcpy (cmd_copy, cmdline, PGSIZE);
 
-  /* Create a new thread to execute FILE_NAME. */
+  /* Create a new child thread to execute FILE_NAME. */
   tid_t tid;
   tid = thread_create (file_name, PRI_DEFAULT, start_process, cmd_copy);
   if (tid == TID_ERROR)
     palloc_free_page (cmd_copy); 
+  else
+  {
+    struct thread *cur = thread_current ();
+    for (int i = 0; i < CHILDREN_MAX; i++)
+      if (cur->c_tids[i] == -1)
+      {
+        cur->c_tids[i] = tid;
+        break;
+      }
+    enum intr_level old_level;
+    old_level = intr_disable ();
+    thread_foreach (&parent_wait, &tid);
+    intr_set_level (old_level);
+  }
+
   return tid;
 }
 
@@ -80,6 +154,9 @@ start_process (void *cmdline)
   if (!success) 
     thread_exit ();
 
+  /* Acquire life. */
+  sema_up (&thread_current ()->life_sema);
+
   /* Start the user process by simulating a return from an
      interrupt, implemented by intr_exit (in
      threads/intr-stubs.S).  Because intr_exit takes all of its
@@ -102,7 +179,24 @@ start_process (void *cmdline)
 int
 process_wait (tid_t child_tid UNUSED) 
 {
-  while (1) {}
+  struct thread *cur = thread_current ();
+  for (int i = 0; i < CHILDREN_MAX; i++)
+  {
+    if (child_tid == cur->c_tids[i])
+    {
+      enum intr_level old_level;
+      old_level = intr_disable ();
+      thread_foreach (&parent_wait, &cur->c_tids[i]);
+      intr_set_level (old_level);
+      
+      /* Disown child. */
+      cur->c_tids[i] = -1;
+
+      /* Return child exit code. */
+      return cur->child_exit_code;
+    }
+  }
+  
   return -1;
 }
 
@@ -112,6 +206,25 @@ process_exit (void)
 {
   struct thread *cur = thread_current ();
   uint32_t *pd;
+
+  /* If user program, deal with any waiting parent. */
+  if (strcmp(cur->name, "main") != 0 && strcmp(cur->name, "idle") != 0)
+  {
+    /* If the parent thread is waiting, set its CHILD_EXIT_CODE field. */
+    if (cur->parent_tid != -1)
+    {
+      enum intr_level old_level;
+      old_level = intr_disable ();
+      thread_foreach (&child_exit, NULL);
+      intr_set_level (old_level);
+    }
+
+    /* Process termination message. */
+    printf ("%s: exit(%d)\n", cur->name, cur->exit_code);
+
+    /* Up LIFE_SEMA. */
+    sema_up (&cur->life_sema);
+  }
 
   /* Destroy the current process's page directory and switch back
      to the kernel-only page directory. */
@@ -243,6 +356,9 @@ load (const char *file_name, char *cmdline, void (**eip) (void), void **esp)
       printf ("load: %s: open failed\n", file_name);
       goto done; 
     }
+
+  /* Deny writes to executable. */
+  file_deny_write (file);
 
   /* Read and verify executable header. */
   if (file_read (file, &ehdr, sizeof ehdr) != sizeof ehdr

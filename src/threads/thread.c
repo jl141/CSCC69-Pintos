@@ -608,6 +608,19 @@ init_thread (struct thread *t, const char *name, int priority)
   t->magic = THREAD_MAGIC;
   t->wake_time = INT64_MIN;
 
+  /* Initialize FD management fields. */
+  for (int i = 0; i < FD_MAX; i++)
+    t->fd_table[i] = NULL;
+  t->fd_next = 2; // FD 0 & 1 are reserved.
+
+  /* Initialize process exec/wait fields. */
+  sema_init (&t->life_sema, 0);
+  for (int i = 0; i < CHILDREN_MAX; i++)
+    t->c_tids[i] = -1;
+  t->child_exit_code = -1;
+  t->parent_tid = -1;
+  t->exit_code = -1;
+
   old_level = intr_disable ();
   list_push_back (&all_list, &t->allelem);
   intr_set_level (old_level);
