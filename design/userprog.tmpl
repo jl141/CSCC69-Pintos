@@ -157,6 +157,9 @@ exit:
 >> paragraphs, describe the strategy or strategies you adopted for
 >> managing these issues.  Give an example.
 
+I do the error handling within the get_user() function, this way the
+validation checks don't clutter the rest of the code.
+
 ---- SYNCHRONIZATION ----
 
 >> B7: The "exec" system call returns -1 if loading the new executable
