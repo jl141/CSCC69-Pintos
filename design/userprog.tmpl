@@ -8,18 +8,23 @@
 
 >> Fill in the names and email addresses of your group members.
 
-FirstName LastName <email@domain.example>
-FirstName LastName <email@domain.example>
-FirstName LastName <email@domain.example>
+Julian Liu | laz.liu@mail.utoronto.ca
 
 ---- PRELIMINARIES ----
 
 >> If you have any preliminary comments on your submission, notes for the
 >> TAs, or extra credit, please give them here.
 
+I found the videos on System Calls, Project 2, and Virtual Memory to be very helpful:
+[System Calls](https://www.youtube.com/watch?v=jfPdiaAG0AQ)
+[Starting with Project 2](https://www.youtube.com/watch?v=3DcNBOUkXuw)
+[Virtual Memory](https://www.youtube.com/watch?v=HWxMH_SNnNM) 
+
 >> Please cite any offline or online sources you consulted while
 >> preparing your submission, other than the Pintos documentation, course
 >> text, lecture notes, and course staff.
+
+Man pages. 
 
                ARGUMENT PASSING
                ================
@@ -30,19 +35,45 @@ FirstName LastName <email@domain.example>
 >> `struct' member, global or static variable, `typedef', or
 >> enumeration.  Identify the purpose of each in 25 words or less.
 
+N/A
+
 ---- ALGORITHMS ----
 
 >> A2: Briefly describe how you implemented argument parsing.  How do
 >> you arrange for the elements of argv[] to be in the right order?
 >> How do you avoid overflowing the stack page?
 
+setup_stack() uses strtok_r() to parse the command line string.
+It pushes (using memset()) the arguments (from left to right) onto the stack,
+keeping track of stack growth, argument count, and the address of the first 
+character of each pushed argument. 
+Then, word-alignment and null pointer sentinel are pushed to the stack.
+Then, the addresses of the arguments are pushed to the stack. Since we want the hex
+address to be pushed two digits at a time, we have to right shift the saved addresses
+a multiple of (2 * 4) bits at a time. We ensure they are in the right order by pushing 
+argument addresses in descending order; e.g. argv[2] then argv[1] then argv[0].
+Then, the address of argv[0] is pushed, again utilizing right shift.
+Then, argc (which we counted earlier) is pushed.
+Finally, the return address is pushed and the stack pointer is set.
+
 ---- RATIONALE ----
 
 >> A3: Why does Pintos implement strtok_r() but not strtok()?
 
+Since strtok_r() requires a context pointer, it allows multiple different
+strings to be tokenized at once, whereas multiple calls to strtok() can only work on
+one string at once. In the man page example, strtok_r() is utilized to
+tokenize two different strings within a nested loop. For Pintos, it is desirable to
+use strtok_r() compared to strtok() since strtok_r() can work even if multiple threads
+are using it at the same time.
+
 >> A4: In Pintos, the kernel separates commands into a executable name
 >> and arguments.  In Unix-like systems, the shell does this
 >> separation.  Identify at least two advantages of the Unix approach.
+
+1. Efficiency: If there is an issue with the command, the shell catches it immediately,
+rather than needing to send it to the kernel and wait for a response. 
+
 
                  SYSTEM CALLS
                  ============
@@ -53,14 +84,34 @@ FirstName LastName <email@domain.example>
 >> `struct' member, global or static variable, `typedef', or
 >> enumeration.  Identify the purpose of each in 25 words or less.
 
+    /* File descriptor management. */
+    struct file *fd_table[FD_MAX];      /* FD table. */
+    int fd_next;                        /* Next available FD. */
+
+    /* For implementing user programs. */
+    struct semaphore life_sema;         /* Synchronization for exec/wait. */
+    tid_t c_tids[CHILDREN_MAX];         /* List of children processes. */
+    int child_exit_code;                /* Child exit code. */
+    tid_t parent_tid;                   /* TID of waiting parent process. */
+    int exit_code;                      /* Exit code of this process. */
+
 >> B2: Describe how file descriptors are associated with open files.
 >> Are file descriptors unique within the entire OS or just within a
 >> single process?
+
+FDs are just unique within a single process. They "connect" processes with
+open files, and one open file might have many different FDs, depending on 
+which process you are looking at. 
 
 ---- ALGORITHMS ----
 
 >> B3: Describe your code for reading and writing user data from the
 >> kernel.
+
+I use the given code for get_user() with added user address validation,
+and the function copy_in() given in the "Starting with Project 2" video.
+My user address validation ensure that the address is nonnull, is a
+user address, and is mapped, so that get_user() can safely copy a byte.
 
 >> B4: Suppose a system call causes a full page (4,096 bytes) of data
 >> to be copied from user space into the kernel.  What is the least
@@ -69,8 +120,28 @@ FirstName LastName <email@domain.example>
 >> for a system call that only copies 2 bytes of data?  Is there room
 >> for improvement in these numbers, and how much?
 
+Full Page: least = 4096, greatest = 4096.
+2 Bytes: least = 2, greatest = 2.
+We can improve these by using a more efficient method of reading user data.
+
 >> B5: Briefly describe your implementation of the "wait" system call
 >> and how it interacts with process termination.
+
+wait:
+1. Parent checks if the given TID is one of its children.
+2. Parent gets the corresponding thread.
+3. Sets child's field `parent_tid' to the parent's TID.
+4. Downs the child's semaphore. 
+5. Disowns the child.
+6. Grabs the child's exit code from the parent's field `child_exit_code'.
+7. All other cases will return -1.
+
+exit:
+1. If userprog, check if the parent is waiting, i.e. field `parent_tid' is not -1.
+2. Child gets the parent thread.
+3. Sets parent's field `child_exit_code' to the child's exit code.
+4. Ups the child's semaphore to signal the waiting parent.
+5. PD destruction. 
 
 >> B6: Any access to user program memory at a user-specified address
 >> can fail due to a bad pointer value.  Such accesses must cause the
@@ -100,16 +171,43 @@ FirstName LastName <email@domain.example>
 >> terminates without waiting, before C exits?  After C exits?  Are
 >> there any special cases?
 
+P calls wait(C) before C exits:
+P downs C's semaphore, and only when C exits is the semaphore up, so
+P is blocked until C exits. 
+
+P calls wait(C) after C exits:
+P downs C's semaphore, which doesn't cause blockage since C ups the
+semaphore upon exit.
+
+Ensure that all resources are freed: 
+Each call to thread_exit() or process_exit() will lead to process_exit(),
+where the semaphore is upped and the PD is destroyed.
+
+P terminates without waiting, before C exits:
+Then P does not set the value of C's `parent_tid' and C does not try to
+set the value of P's `child_exit_code'.
+
+P terminates without waiting, after C exits:
+P's termination has nothing to do with C if C is also terminated.
+
 ---- RATIONALE ----
 
 >> B9: Why did you choose to implement access to user memory from the
 >> kernel in the way that you did?
 
+I picked the verification of user virtual addresses, frankly because I wasn't confident
+enough to take on the more difficult approach. 
+
 >> B10: What advantages or disadvantages can you see to your design
 >> for file descriptors?
 
+Advantages: Very simple array of pointers to open files. No need to manage a list or synchronization.
+Disadvantages: Limited number of file descriptors available.
+
 >> B11: The default tid_t to pid_t mapping is the identity mapping.
 >> If you changed it, what advantages are there to your approach?
+
+N/A
 
                SURVEY QUESTIONS
                ================
@@ -123,12 +221,28 @@ the quarter.
 >> In your opinion, was this assignment, or any one of the three problems
 >> in it, too easy or too hard?  Did it take too long or too little time?
 
+This certainly felt like quite the jump in difficulty from Project 1. 
+More reading and tracing than Project 1 before I could start coding.
+In addition, I found motivation in seeing tests pass one by one as I 
+my implementation came along for P1, but for this project I spent HOURS
+just to get any tests to pass. As such, I could never estimate how far
+along I was in the project until I could see a number of tests passed.
+This caused slightly higher stress levels compared to P1. 
+
 >> Did you find that working on a particular part of the assignment gave
 >> you greater insight into some aspect of OS design?
+
+Definitely. I quite enjoy these projects, even if I get destroyed by them.
+It's so fulfilling to see how pieces of code can come together and essentially
+create a universal Turing Machine.
 
 >> Is there some particular fact or hint we should give students in
 >> future quarters to help them solve the problems?  Conversely, did you
 >> find any of our guidance to be misleading?
+
+For my work on this project, I found the available videos and documents
+to be quite helpful. I frequently rewatched and reread so much to build
+and maintain my understanding.
 
 >> Do you have any suggestions for the TAs to more effectively assist
 >> students, either for future quarters or the remaining projects?

@@ -20,43 +20,6 @@ syscall_init (void)
   intr_register_int (0x30, 3, INTR_ON, syscall_handler, "syscall");
 }
 
-/* Reads a byte at user virtual address UADDR.
-   UADDR must be below PHYS_BASE.
-   Returns the byte value if successful, -1 if a segfault
-   occurred. */
-static int
-get_user (const uint8_t *uaddr)
-{
-  int result;
-  asm ("movl $1f, %0; movzbl %1, %0; 1:"
-    : "=&a" (result) : "m" (*uaddr));
-  return result;
-}
-
-/* Writes BYTE to user address UDST.
-   UDST must be below PHYS_BASE.
-   Returns true if successful, false if a segfault occurred. */
-/*static bool
-put_user (uint8_t *udst, uint8_t byte)
-{
-  int error_code;
-  asm ("movl $1f, %0; movb %b2, %1; 1:"
-    : "=&a" (error_code), "=m" (*udst) : "q" (byte));
-  return error_code != -1;
-}*/
-
-/* Returns false on null pointers, pointers that don't point to
-   user virtual memory, and pointers to unmapped virtual memory. */
-static bool
-is_valid_usrc (const void *usrc)
-{
-  if (usrc == NULL ||
-      !is_user_vaddr (usrc) ||
-      pagedir_get_page (thread_current ()->pagedir, usrc) == NULL)
-    return false;
-  return true;
-}
-
 static void
 exit (int status)
 {
@@ -64,6 +27,50 @@ exit (int status)
   thread_exit ();
 }
 
+/* Returns false on null pointers, pointers that don't point to
+   user virtual memory, and pointers to unmapped virtual memory. */
+static bool
+is_valid_usrc (const uint8_t *usrc)
+{
+  if (usrc == NULL ||
+      !is_user_vaddr (usrc) ||
+      pagedir_get_page (thread_current ()->pagedir, usrc) == NULL)
+    return false;
+  return true;
+}
+      
+/* Reads a byte at user virtual address UADDR.
+   UADDR must be below PHYS_BASE.
+   Returns the byte value if successful, -1 if a segfault
+   occurred. */
+static int
+get_user (const uint8_t *uaddr)
+{
+  if (!is_valid_usrc (uaddr))
+    exit (-1);
+  int result;
+  asm ("movl $1f, %0; movzbl %1, %0; 1:"
+    : "=&a" (result) : "m" (*uaddr));
+  return result;
+}
+
+/* Returns false on bad strings: NULL, no end of string character, or
+   invalid user address. */
+static bool
+is_valid_string (const char *s)
+{
+  if (s == NULL)
+    return false;
+  char c;
+  while (is_user_vaddr(s) && 
+         (c = get_user((const uint8_t *) s)) != -1)
+    if (c == '\0')
+      return true;
+    else
+      s++;
+  return false;
+}
+   
 static void
 copy_in (void *dst_, const void *usrc_, size_t size)
 {
@@ -72,42 +79,26 @@ copy_in (void *dst_, const void *usrc_, size_t size)
 
   for (; size > 0; size--, dst++, usrc++)
   {
-    if (!is_valid_usrc (usrc))
-      {
-        //printf ("copy in exit\n");
-        exit (-1);
-      }
-
-    *dst = get_user (usrc);
+    int byte = get_user (usrc);
+    if (byte == -1)
+      exit (-1);
+    *dst = byte;
   }
 }
 
 static void
 extract_args (void *dst, struct intr_frame *f, int num_args)
 {
-  if (!is_valid_usrc ((uint32_t *) f->esp + 1) ||
-      !is_valid_usrc ((uint32_t *) f->esp + sizeof(uint32_t) * num_args))
-      {
-        //printf ("extract args exit\n");
-        exit (-1);
-      }
   copy_in ((uint32_t *) dst, (uint32_t *) f->esp + 1, sizeof(uint32_t) * num_args);
 }
 
 static void
 syscall_handler (struct intr_frame *f) 
 {
-  unsigned syscall_number;
+  unsigned int syscall_number;
 
   /* Extract syscall number. */
-  if (!is_valid_usrc ((uint32_t *) f->esp) ||
-      !is_valid_usrc ((uint32_t *) f->esp + sizeof syscall_number - 1))
-      {
-        //printf ("syscall exit\n");
-        exit (-1);
-      }
   copy_in (&syscall_number, f->esp, sizeof syscall_number);
-  //DEBUG printf (" === system call %u ===\n", syscall_number);
 
   /* Handle appropriate syscall. */
   switch (syscall_number) 
@@ -174,8 +165,8 @@ syscall_handler (struct intr_frame *f)
       extract_args (args, f, num_args);
 
       /* Create file. */
-      if (strlen ((char *) args[0]) == 0)
-        success = false;
+      if (!is_valid_string ((const char *) args[0]))
+        exit (-1);
       else
         success = filesys_create ((const char *) args[0], (off_t) args[1]);
 
@@ -193,8 +184,8 @@ syscall_handler (struct intr_frame *f)
       extract_args (args, f, num_args);
 
       /* Remove file. */
-      if (strlen ((char *) args[0]) == 0)
-        success = false;
+      if (!is_valid_string ((const char *) args[0]))
+        exit (-1);
       else
         success = filesys_remove ((const char *) args[0]);
 
@@ -212,8 +203,8 @@ syscall_handler (struct intr_frame *f)
       extract_args (args, f, num_args);
 
       /* Open file. */
-      if (strlen ((char *) args[0]) == 0)
-        fd = -1;
+      if (!is_valid_string ((const char *) args[0]))
+        exit (-1);
       else
       {
         struct file *open_file = filesys_open ((const char *) args[0]);
@@ -251,7 +242,7 @@ syscall_handler (struct intr_frame *f)
     {
       int num_args = 3;
       uint32_t args[num_args];
-      int bytes_read;
+      uint32_t bytes_read;
 
       /* Extract arguments. */
       extract_args (args, f, num_args);
@@ -259,11 +250,21 @@ syscall_handler (struct intr_frame *f)
       /* Execute the read. */
       if (args[0] == STDIN_FILENO)
       {
-        for (unsigned i = 0; i < args[2]; i++) 
+        bytes_read = 0;
+        for (uint32_t i = 0; i < args[2]; i++, bytes_read++)
+          ((char *) args[1])[i] = input_getc ();
+      }
+      else 
+      {
+        struct file *f = process_get_file (args[0]);
+        if (f == NULL)
+          bytes_read = -1;
+        else 
         {
-          ((char *) args[1])[i] = input_getc();
+          bytes_read = file_read (f, &args[1], (off_t) args[2]);
+          if (bytes_read < args[2])
+            bytes_read = 0;
         }
-        bytes_read = args[2];
       }
 
       /* Set the returned value. */
@@ -279,16 +280,19 @@ syscall_handler (struct intr_frame *f)
       /* Extract arguments. */
       extract_args (args, f, num_args);
 
-      /*//DEBUG
-      printf ("\tfd: %d (should be %u)\n", args[0], STDOUT_FILENO);
-      printf ("\tbuf addr: %p\n", args[1]);
-      printf ("\tsize: %u\n", args[2]);*/
-
       /* Execute the write. */
       if (args[0] == STDOUT_FILENO)
       {
         putbuf ((const char *) args[1], args[2]);
         bytes_written = args[2];
+      }
+      else 
+      {
+        struct file *f = process_get_file (args[0]);
+        if (f == NULL)
+          bytes_written = -1;
+        else 
+          bytes_written = file_write (f, &args[1], (off_t) args[2]);
       }
 
       /* Set the returned value. */
@@ -347,5 +351,4 @@ syscall_handler (struct intr_frame *f)
     }
     break;
   }
-
 }

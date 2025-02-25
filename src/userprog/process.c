@@ -64,6 +64,7 @@ parent_wait (struct thread *t, void *child_tid_)
   tid_t *child_tid = child_tid_;
   if (t->tid == *child_tid)
   {
+    t->parent_tid = thread_current ()->tid;
     if (&t->life_sema != NULL)
       sema_down (&t->life_sema);
   }
@@ -148,14 +149,15 @@ start_process (void *cmdline)
   if_.cs = SEL_UCSEG;
   if_.eflags = FLAG_IF | FLAG_MBS;
   success = load (file_name, cmdline, &if_.eip, &if_.esp);
+  
+  /* Acquire life. */
+  sema_up (&thread_current ()->life_sema);
 
   /* If load failed, quit. */
   palloc_free_page (cmdline);
   if (!success) 
     thread_exit ();
 
-  /* Acquire life. */
-  sema_up (&thread_current ()->life_sema);
 
   /* Start the user process by simulating a return from an
      interrupt, implemented by intr_exit (in
@@ -640,8 +642,6 @@ setup_stack (char *cmdline, void **esp)
 
         /* Set stack pointer. */
         *esp = PHYS_BASE - size_counter;
-
-//DEBUG hex_dump ((uintptr_t)PHYS_BASE - size_counter, *esp, size_counter, true);
       }
       else
         palloc_free_page (kpage);
