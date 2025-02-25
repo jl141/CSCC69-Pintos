@@ -4,6 +4,7 @@
 #include <debug.h>
 #include <list.h>
 #include <stdint.h>
+#include "threads/synch.h"
 
 /* States in a thread's life cycle. */
 enum thread_status
@@ -29,6 +30,12 @@ typedef int tid_t;
 
 /* Limit on number of distinct priority donations. */
 #define WIDTH 63
+
+/* Limit on number of file descriptors saved in the FD table. */
+#define FD_MAX 63
+
+/* Limit on number of children. */
+#define CHILDREN_MAX 32
 
 /* A kernel thread or user process.
 
@@ -110,6 +117,17 @@ struct thread
 
     /* Owned by thread.c. */
     unsigned magic;                     /* Detects stack overflow. */
+
+    /* File descriptor management. */
+    struct file *fd_table[FD_MAX];      /* FD table. */
+    int fd_next;                        /* Next available FD. */
+
+    /* For implementing user programs. */
+    struct semaphore life_sema;         /* Synchronization for exec/wait. */
+    tid_t c_tids[CHILDREN_MAX];         /* List of children processes. */
+    int child_exit_code;                /* Child exit code. */
+    tid_t parent_tid;                   /* TID of waiting parent process. */
+    int exit_code;                      /* Exit code of this process. */
   };
 
 /* If false (default), use round-robin scheduler.
